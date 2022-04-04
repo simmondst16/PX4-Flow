@@ -234,6 +234,19 @@ void global_data_reset_param_defaults(void){
 	strcpy(global_data.param_name[DEBUG_VARIABLE], "DEBUG");
 	global_data.param_access[DEBUG_VARIABLE] = READ_WRITE;
 
+	//added params for using laser altimeter
+	global_data.param[PARAM_LASER_FILTERED] = 0;
+	strcpy(global_data.param_name[PARAM_LASER_FILTERED], "LASER_FILTERED");
+	global_data.param_access[PARAM_LASER_FILTERED] = READ_WRITE;
+
+	global_data.param[PARAM_LASER_KALMAN_L1] = 0.8461f;
+	strcpy(global_data.param_name[PARAM_LASER_KALMAN_L1], "LASER_KAL_L1");
+	global_data.param_access[PARAM_LASER_KALMAN_L1] = READ_WRITE;
+
+	global_data.param[PARAM_LASER_KALMAN_L2] = 6.2034f;
+	strcpy(global_data.param_name[PARAM_LASER_KALMAN_L2], "SONAR_KAL_L2");
+	global_data.param_access[PARAM_LASER_KALMAN_L2] = READ_WRITE;
+
 }
 
 /**

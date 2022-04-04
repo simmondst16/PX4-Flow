@@ -89,6 +89,7 @@ __ALIGN_BEGIN USB_OTG_CORE_HANDLE  USB_OTG_dev __ALIGN_END;
 uint8_t image_buffer_8bit_1[FULL_IMAGE_SIZE] __attribute__((section(".ccm")));
 uint8_t image_buffer_8bit_2[FULL_IMAGE_SIZE] __attribute__((section(".ccm")));
 uint8_t buffer_reset_needed;
+bool useLaser = false;
 
 /* boot time in milliseconds ticks */
 volatile uint32_t boot_time_ms = 0;
@@ -106,9 +107,11 @@ volatile uint32_t boot_time10_us = 0;
 #define TIMER_PARAMS		6
 #define TIMER_IMAGE			7
 #define TIMER_LPOS		8
+#define TIMER_LASER		9
 #define MS_TIMER_COUNT		100 /* steps in 10 microseconds ticks */
 #define LED_TIMER_COUNT		500 /* steps in milliseconds ticks */
 #define SONAR_TIMER_COUNT 	100	/* steps in milliseconds ticks */
+#define LASER_TIMER_COUNT 	100	/* steps in milliseconds ticks */
 #define SYSTEM_STATE_COUNT	1000/* steps in milliseconds ticks */
 #define PARAMS_COUNT		100	/* steps in milliseconds ticks */
 #define LPOS_TIMER_COUNT 	100	/* steps in milliseconds ticks */
@@ -155,10 +158,15 @@ void timer_update_ms(void)
 		timer[TIMER_LED] = LED_TIMER_COUNT;
 	}
 
-	if (timer[TIMER_SONAR] == 0)
+	if (timer[TIMER_SONAR] == 0 && useLaser == false)
 	{
 		sonar_trigger();
 		timer[TIMER_SONAR] = SONAR_TIMER_COUNT;
+	}
+
+	if (timer[TIMER_LASER] == 0 && useLaser == true)
+	{
+		timer[TIMER_LASER] = LASER_TIMER_COUNT;
 	}
 
 	if (timer[TIMER_SYSTEM_STATE] == 0)
@@ -307,10 +315,24 @@ int main(void)
 	float sonar_distance_filtered = 0.0f; // distance in meter
 	float sonar_distance_raw = 0.0f; // distance in meter
 	bool distance_valid = false;
-	sonar_config();
+	
+	float laser_distance_filtered = 0.0f; // distance in meter
+	float laser_distance_raw = 0.0f; // distance in meter
 
+	if(useLaser){
+		laser_config();
+	}
+	else{
+		sonar_config();
+	}
+	
 	/* reset/start timers */
-	timer[TIMER_SONAR] = SONAR_TIMER_COUNT;
+	if(!useLaser){
+		timer[TIMER_SONAR] = SONAR_TIMER_COUNT;
+	}
+	else{
+		timer[TIMER_LASER] = LASER_TIMER_COUNT;
+	}
 	timer[TIMER_SYSTEM_STATE] = SYSTEM_STATE_COUNT;
 	timer[TIMER_RECEIVE] = SYSTEM_STATE_COUNT / 2;
 	timer[TIMER_PARAMS] = PARAMS_COUNT;
@@ -342,6 +364,7 @@ int main(void)
 	static uint32_t integration_timespan = 0;
 	static uint32_t lasttime = 0;
 	uint32_t time_since_last_sonar_update= 0;
+	uint32_t time_since_last_laser_update= 0;
 	uint32_t time_last_pub= 0;
 
 	uavcan_start();
@@ -413,12 +436,18 @@ int main(void)
 		/* calculate focal_length in pixel */
 		const float focal_length_px = (global_data.param[PARAM_FOCAL_LENGTH_MM]) / (4.0f * 6.0f) * 1000.0f; //original focal lenght: 12mm pixelsize: 6um, binning 4 enabled
 
-		/* get sonar data */
-		distance_valid = sonar_read(&sonar_distance_filtered, &sonar_distance_raw);
-
+		/* get sonar/laser data */
+		if(!useLaser){
+			distance_valid = sonar_read(&sonar_distance_filtered, &sonar_distance_raw);
+		}
+		else{
+			distance_valid = laser_calc();
+		}
 		/* reset to zero for invalid distances */
 		if (!distance_valid) {
 			sonar_distance_filtered = 0.0f;
+			sonar_distance_raw = 0.0f;
+			laser_distance_filtered = 0.0f;
 			sonar_distance_raw = 0.0f;
 		}
 
@@ -459,10 +488,18 @@ int main(void)
 			if (distance_valid)
 			{
 				/* calc velocity (negative of flow values scaled with distance) */
-				float new_velocity_x = - flow_compx * sonar_distance_filtered;
-				float new_velocity_y = - flow_compy * sonar_distance_filtered;
-
-				time_since_last_sonar_update = (get_boot_time_us()- get_sonar_measure_time());
+				float new_velocity_x, new_velocity_y;
+				
+				if(useLaser){
+					new_velocity_x = - flow_compx * laser_distance_filtered;
+					new_velocity_y = - flow_compy * laser_distance_filtered;
+					time_since_last_laser_update = (get_boot_time_us()- get_laser_measure_time());
+				} 
+				else{
+					new_velocity_x = - flow_compx * sonar_distance_filtered;
+					new_velocity_y = - flow_compy * sonar_distance_filtered;
+					time_since_last_sonar_update = (get_boot_time_us()- get_sonar_measure_time());
+				}
 
 				if (qual > 0)
 				{
@@ -506,19 +543,26 @@ int main(void)
 			float ground_distance = 0.0f;
 
 
-			if(FLOAT_AS_BOOL(global_data.param[PARAM_SONAR_FILTERED]))
+			if(FLOAT_AS_BOOL(global_data.param[PARAM_SONAR_FILTERED]) && !useLaser)
 			{
 				ground_distance = sonar_distance_filtered;
 			}
-			else
+			else if(!FLOAT_AS_BOOL(global_data.param[PARAM_SONAR_FILTERED]) && !useLaser)
 			{
 				ground_distance = sonar_distance_raw;
 			}
+			else if(FLOAT_AS_BOOL(global_data.param[PARAM_LASER_FILTERED]) && useLaser){
+				ground_distance = laser_distance_filtered;
+			}
+			else
+			{
+				ground_distance = laser_distance_raw;
+			}
 
-                        uavcan_define_export(i2c_data, legacy_12c_data_t, ccm);
-                        uavcan_define_export(range_data, range_data_t, ccm);
+			uavcan_define_export(i2c_data, legacy_12c_data_t, ccm);
+			uavcan_define_export(range_data, range_data_t, ccm);
 			uavcan_timestamp_export(i2c_data);
-                        uavcan_assign(range_data.time_stamp_utc, i2c_data.time_stamp_utc);
+			uavcan_assign(range_data.time_stamp_utc, i2c_data.time_stamp_utc);
 			//update I2C transmitbuffer
 			if(valid_frame_count>0)
 			{
@@ -573,11 +617,20 @@ int main(void)
 						pixel_flow_x_sum * 10.0f, pixel_flow_y_sum * 10.0f,
 						flow_comp_m_x, flow_comp_m_y, qual, ground_distance);
 
-				mavlink_msg_optical_flow_rad_send(MAVLINK_COMM_0, get_boot_time_us(), global_data.param[PARAM_SENSOR_ID],
+				if(!useLaser){
+					mavlink_msg_optical_flow_rad_send(MAVLINK_COMM_0, get_boot_time_us(), global_data.param[PARAM_SENSOR_ID],
 						integration_timespan, accumulated_flow_x, accumulated_flow_y,
 						accumulated_gyro_x, accumulated_gyro_y, accumulated_gyro_z,
 						gyro_temp, accumulated_quality/accumulated_framecount,
 						time_since_last_sonar_update,ground_distance);
+				}
+				else{
+					mavlink_msg_optical_flow_rad_send(MAVLINK_COMM_0, get_boot_time_us(), global_data.param[PARAM_SENSOR_ID],
+						integration_timespan, accumulated_flow_x, accumulated_flow_y,
+						accumulated_gyro_x, accumulated_gyro_y, accumulated_gyro_z,
+						gyro_temp, accumulated_quality/accumulated_framecount,
+						time_since_last_laser_update,ground_distance);
+				}
 
 				/* send approximate local position estimate without heading */
 				if (FLOAT_AS_BOOL(global_data.param[PARAM_SYSTEM_SEND_LPOS]))
@@ -607,11 +660,20 @@ int main(void)
 						flow_comp_m_x, flow_comp_m_y, qual, ground_distance);
 
 
-					mavlink_msg_optical_flow_rad_send(MAVLINK_COMM_2, get_boot_time_us(), global_data.param[PARAM_SENSOR_ID],
+					if(!useLaser){
+						mavlink_msg_optical_flow_rad_send(MAVLINK_COMM_2, get_boot_time_us(), global_data.param[PARAM_SENSOR_ID],
 							integration_timespan, accumulated_flow_x, accumulated_flow_y,
 							accumulated_gyro_x, accumulated_gyro_y, accumulated_gyro_z,
 							gyro_temp, accumulated_quality/accumulated_framecount,
 							time_since_last_sonar_update,ground_distance);
+					}
+					else{
+						mavlink_msg_optical_flow_rad_send(MAVLINK_COMM_2, get_boot_time_us(), global_data.param[PARAM_SENSOR_ID],
+							integration_timespan, accumulated_flow_x, accumulated_flow_y,
+							accumulated_gyro_x, accumulated_gyro_y, accumulated_gyro_z,
+							gyro_temp, accumulated_quality/accumulated_framecount,
+							time_since_last_laser_update,ground_distance);
+					}
 				}
 
 
